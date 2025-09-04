@@ -290,7 +290,7 @@ export default function App() {
             จำลองการลงทุนแบบ DCA พร้อมค่าธรรมเนียม ปันผล และการทบต้น เห็นกราฟและสรุปผลทันที
           </p>
           <a
-            href="https://www.facebook.com/T.Jukkitz/"
+            href="https://forms.gle/irK5aP4U5NZKXc5s9"
             target="_blank"
             rel="noopener noreferrer"
             className="inline-block text-sm text-blue-600 hover:underline"
