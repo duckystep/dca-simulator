@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label"
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert"
 import { LineChart, Line, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer } from "recharts"
 import { Plus, Trash2, Save, AlertTriangle, TrendingUp, TrendingDown } from "lucide-react"
+import { Switch } from "@/components/ui/switch"
 
 // ---- Chart Colors (distinct) ----
 const COLOR_PALETTE = [
@@ -37,7 +38,18 @@ function toPercent(x) {
   return `${x.toFixed(2)}%`
 }
 
-function simulateDCA({ months, monthlyBudget, assets, which }) {
+function simulateDCA({
+  months,
+  monthlyBudget,
+  assets,
+  which,
+  tradeFeePct,
+  dividendYieldPct,
+  withholdTaxPct,
+  drip,
+  enableFees,
+  enableDividends,
+}) {
   const names = assets.map((a) => a.name)
   const allocFrac = (() => {
     const sumPct = assets.reduce((s, a) => s + (Number(a.allocPct) || 0), 0) || 1
@@ -56,12 +68,35 @@ function simulateDCA({ months, monthlyBudget, assets, which }) {
 
   const values = Object.fromEntries(names.map((n) => [n, 0]))
   const rows = []
+  let accumulatedCashDividends = 0
+  const monthlyDividendRate = enableDividends ? (Number(dividendYieldPct) || 0) / 100 / 12 : 0
+  const tradeFeeRate = enableFees ? (Number(tradeFeePct) || 0) / 100 : 0
+  const withholdTaxRate = enableDividends ? (Number(withholdTaxPct) || 0) / 100 : 0
 
   for (let m = 0; m < months; m++) {
+    let monthlyDividends = 0
+
+    if (enableDividends) {
+      names.forEach((n) => {
+        const dividendAmount = values[n] * monthlyDividendRate
+        monthlyDividends += dividendAmount
+      })
+    }
+
+    const netDividends = enableDividends ? monthlyDividends * (1 - withholdTaxRate) : 0
+
     names.forEach((n) => {
-      const contrib = monthlyBudget * allocFrac[n]
-      values[n] = (values[n] + contrib) * (1 + mRates[n])
+      const baseContrib = monthlyBudget * allocFrac[n] * (1 - tradeFeeRate)
+      const assetDividend = enableDividends ? values[n] * monthlyDividendRate * (1 - withholdTaxRate) : 0
+      const totalContrib = enableDividends && drip ? baseContrib + assetDividend * allocFrac[n] : baseContrib
+
+      values[n] = (values[n] + totalContrib) * (1 + mRates[n])
     })
+
+    if (enableDividends && !drip) {
+      accumulatedCashDividends += netDividends
+    }
+
     const row = { month: m + 1 }
     let total = 0
     names.forEach((n) => {
@@ -69,15 +104,30 @@ function simulateDCA({ months, monthlyBudget, assets, which }) {
       total += values[n]
     })
     row.Total = total
+    row.CashDividends = accumulatedCashDividends
+    row.MonthlyDividends = netDividends
     rows.push(row)
   }
 
-  const investedByAsset = Object.fromEntries(names.map((n) => [n, monthlyBudget * allocFrac[n] * months]))
+  const investedByAsset = Object.fromEntries(
+    names.map((n) => [n, monthlyBudget * allocFrac[n] * months * (1 - tradeFeeRate)]),
+  )
   const finalByAsset = Object.fromEntries(names.map((n) => [n, rows[rows.length - 1][n]]))
   const totalInvested = Object.values(investedByAsset).reduce((a, b) => a + b, 0)
   const totalFinal = rows[rows.length - 1].Total
+  const totalFees = enableFees ? monthlyBudget * months * tradeFeeRate : 0
+  const totalDividends = enableDividends ? rows.reduce((sum, row) => sum + row.MonthlyDividends, 0) : 0
 
-  return { rows, investedByAsset, finalByAsset, totalInvested, totalFinal }
+  return {
+    rows,
+    investedByAsset,
+    finalByAsset,
+    totalInvested,
+    totalFinal,
+    accumulatedCashDividends,
+    totalFees,
+    totalDividends,
+  }
 }
 
 function makeCSV(rows) {
@@ -92,6 +142,14 @@ export default function App() {
   const [monthlyBudget, setMonthlyBudget] = useState(10000)
   const [periodMode, setPeriodMode] = useState("years")
   const [periodInput, setPeriodInput] = useState(10)
+
+  const [enableFees, setEnableFees] = useState(false)
+  const [enableDividends, setEnableDividends] = useState(false)
+
+  const [tradeFeePct, setTradeFeePct] = useState(0.5)
+  const [dividendYieldPct, setDividendYieldPct] = useState(2.0)
+  const [withholdTaxPct, setWithholdTaxPct] = useState(10)
+  const [drip, setDrip] = useState(true)
 
   const [assets, setAssets] = useState([
     { id: 1, name: "S&P500", allocPct: 50, low: 10, mid: 10, high: 10 },
@@ -126,16 +184,82 @@ export default function App() {
   )
 
   const low = useMemo(
-    () => simulateDCA({ months: effectiveMonths, monthlyBudget, assets, which: "low" }),
-    [effectiveMonths, monthlyBudget, assets],
+    () =>
+      simulateDCA({
+        months: effectiveMonths,
+        monthlyBudget,
+        assets,
+        which: "low",
+        tradeFeePct,
+        dividendYieldPct,
+        withholdTaxPct,
+        drip,
+        enableFees,
+        enableDividends,
+      }),
+    [
+      effectiveMonths,
+      monthlyBudget,
+      assets,
+      tradeFeePct,
+      dividendYieldPct,
+      withholdTaxPct,
+      drip,
+      enableFees,
+      enableDividends,
+    ],
   )
   const mid = useMemo(
-    () => simulateDCA({ months: effectiveMonths, monthlyBudget, assets, which: "mid" }),
-    [effectiveMonths, monthlyBudget, assets],
+    () =>
+      simulateDCA({
+        months: effectiveMonths,
+        monthlyBudget,
+        assets,
+        which: "mid",
+        tradeFeePct,
+        dividendYieldPct,
+        withholdTaxPct,
+        drip,
+        enableFees,
+        enableDividends,
+      }),
+    [
+      effectiveMonths,
+      monthlyBudget,
+      assets,
+      tradeFeePct,
+      dividendYieldPct,
+      withholdTaxPct,
+      drip,
+      enableFees,
+      enableDividends,
+    ],
   )
   const high = useMemo(
-    () => simulateDCA({ months: effectiveMonths, monthlyBudget, assets, which: "high" }),
-    [effectiveMonths, monthlyBudget, assets],
+    () =>
+      simulateDCA({
+        months: effectiveMonths,
+        monthlyBudget,
+        assets,
+        which: "high",
+        tradeFeePct,
+        dividendYieldPct,
+        withholdTaxPct,
+        drip,
+        enableFees,
+        enableDividends,
+      }),
+    [
+      effectiveMonths,
+      monthlyBudget,
+      assets,
+      tradeFeePct,
+      dividendYieldPct,
+      withholdTaxPct,
+      drip,
+      enableFees,
+      enableDividends,
+    ],
   )
 
   const scenarios = { low, mid, high }
@@ -160,10 +284,10 @@ export default function App() {
       <div className="max-w-7xl mx-auto space-y-6">
         <div className="text-center space-y-2">
           <h1 className="text-3xl md:text-4xl font-bold tracking-tight bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
-             DCA Simulator – Dynamic Assets
+            DCA Simulator – Dynamic Assets + Fees & DRIP
           </h1>
           <p className="text-muted-foreground max-w-2xl mx-auto">
-            จำลองการลงทุนแบบ DCA เลือกสินทรัพย์เอง เห็นกราฟและสรุปผลทันที
+            จำลองการลงทุนแบบ DCA พร้อมค่าธรรมเนียม ปันผล และการทบต้น เห็นกราฟและสรุปผลทันที
           </p>
           <a
             href="https://www.facebook.com/T.Jukkitz/"
@@ -175,7 +299,15 @@ export default function App() {
           </a>
         </div>
 
-        {/* Controls */}
+        <Alert className="rounded-2xl border-amber-200 bg-amber-50">
+          <AlertTriangle className="h-4 w-4 text-amber-600" />
+          <AlertTitle className="text-amber-800">หมายเหตุสำคัญ</AlertTitle>
+          <AlertDescription className="text-amber-700">
+            ผลลัพธ์นี้เป็นเพียงการจำลองด้วยอัตราผลตอบแทนเฉลี่ยคงที่ ไม่ได้สะท้อนความผันผวนจริงของตลาด ใช้เพื่อการศึกษาเท่านั้น
+            ไม่ควรใช้แทนคำแนะนำด้านการลงทุนจริง
+          </AlertDescription>
+        </Alert>
+
         <Card className="rounded-2xl shadow-lg border-0 bg-white/80 backdrop-blur-sm">
           <CardContent className="p-6">
             <div className="grid lg:grid-cols-3 gap-6">
@@ -207,6 +339,73 @@ export default function App() {
                       <option value="years">ปี</option>
                     </select>
                   </div>
+                </div>
+
+                <div className="border-t pt-4 space-y-4">
+                  <h3 className="font-semibold text-slate-700">ค่าธรรมเนียมและปันผล</h3>
+
+                  <div className="flex items-center justify-between p-3 bg-slate-50 rounded-lg">
+                    <div>
+                      <Label className="font-medium text-slate-700">เปิดใช้ค่าธรรมเนียม</Label>
+                      <p className="text-xs text-muted-foreground">คิดค่าธรรมเนียมการซื้อขาย</p>
+                    </div>
+                    <Switch checked={enableFees} onCheckedChange={setEnableFees} />
+                  </div>
+
+                  {enableFees && (
+                    <div>
+                      <Label className="font-medium text-slate-600">ค่าธรรมเนียมซื้อขาย (%)</Label>
+                      <Input
+                        type="number"
+                        step="0.1"
+                        value={tradeFeePct}
+                        onChange={(e) => setTradeFeePct(Math.max(0, Number(e.target.value || 0)))}
+                        className="mt-1"
+                      />
+                    </div>
+                  )}
+
+                  <div className="flex items-center justify-between p-3 bg-slate-50 rounded-lg">
+                    <div>
+                      <Label className="font-medium text-slate-700">เปิดใช้ปันผล</Label>
+                      <p className="text-xs text-muted-foreground">คำนวณปันผลและการทบต้น</p>
+                    </div>
+                    <Switch checked={enableDividends} onCheckedChange={setEnableDividends} />
+                  </div>
+
+                  {enableDividends && (
+                    <>
+                      <div>
+                        <Label className="font-medium text-slate-600">อัตราปันผลต่อปี (%)</Label>
+                        <Input
+                          type="number"
+                          step="0.1"
+                          value={dividendYieldPct}
+                          onChange={(e) => setDividendYieldPct(Math.max(0, Number(e.target.value || 0)))}
+                          className="mt-1"
+                        />
+                      </div>
+
+                      <div>
+                        <Label className="font-medium text-slate-600">ภาษีหัก ณ ที่จ่าย (%)</Label>
+                        <Input
+                          type="number"
+                          step="0.1"
+                          value={withholdTaxPct}
+                          onChange={(e) => setWithholdTaxPct(Math.max(0, Number(e.target.value || 0)))}
+                          className="mt-1"
+                        />
+                      </div>
+
+                      <div className="flex items-center justify-between">
+                        <Label className="font-medium text-slate-600">DRIP (ปันผลทบต้น)</Label>
+                        <Switch checked={drip} onCheckedChange={setDrip} />
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        {drip ? "ปันผลจะถูกนำไปลงทุนต่อโดยอัตโนมัติ" : "ปันผลจะเก็บเป็นเงินสดแยกต่างหาก"}
+                      </p>
+                    </>
+                  )}
                 </div>
               </div>
 
@@ -349,8 +548,26 @@ export default function App() {
                         <span className="text-muted-foreground">มูลค่าสุดท้าย:</span>
                         <span className="font-medium">฿{toTHB(result.totalFinal)}</span>
                       </div>
+                      {enableFees && (
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">ค่าธรรมเนียมรวม:</span>
+                          <span className="font-medium text-red-600">฿{toTHB(result.totalFees)}</span>
+                        </div>
+                      )}
+                      {enableDividends && (
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">ปันผลรวม:</span>
+                          <span className="font-medium text-green-600">฿{toTHB(result.totalDividends)}</span>
+                        </div>
+                      )}
+                      {enableDividends && !drip && (
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">เงินสดปันผล:</span>
+                          <span className="font-medium text-blue-600">฿{toTHB(result.accumulatedCashDividends)}</span>
+                        </div>
+                      )}
                       <div className="flex justify-between">
-                        <span className="text-muted-foreground">กำไร/ขaดทุน:</span>
+                        <span className="text-muted-foreground">กำไร/ขาดทุน:</span>
                         <span className={`font-medium ${isProfit ? "text-green-600" : "text-red-600"}`}>
                           {isProfit ? "+" : ""}฿{toTHB(profit)}
                         </span>
@@ -370,7 +587,6 @@ export default function App() {
           </CardContent>
         </Card>
 
-        {/* Results */}
         <Tabs defaultValue="mid" className="w-full">
           <TabsList className="grid grid-cols-3 w-full max-w-md mx-auto">
             <TabsTrigger value="low" className="data-[state=active]:bg-red-100 data-[state=active]:text-red-700">
@@ -401,7 +617,7 @@ export default function App() {
                       </Button>
                     </div>
 
-                    <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                    <div className="grid sm:grid-cols-2 lg:grid-cols-6 gap-4">
                       <div className="bg-slate-50 rounded-lg p-4">
                         <p className="text-sm text-muted-foreground">ลงทุนรวม</p>
                         <p className="text-xl font-bold text-slate-700">฿{toTHB(result.totalInvested)}</p>
@@ -410,6 +626,24 @@ export default function App() {
                         <p className="text-sm text-muted-foreground">มูลค่าสุดท้าย</p>
                         <p className="text-xl font-bold text-blue-600">฿{toTHB(result.totalFinal)}</p>
                       </div>
+                      {enableFees && (
+                        <div className="bg-red-50 rounded-lg p-4">
+                          <p className="text-sm text-muted-foreground">ค่าธรรมเนียม</p>
+                          <p className="text-xl font-bold text-red-600">฿{toTHB(result.totalFees)}</p>
+                        </div>
+                      )}
+                      {enableDividends && (
+                        <div className="bg-green-50 rounded-lg p-4">
+                          <p className="text-sm text-muted-foreground">ปันผลรวม</p>
+                          <p className="text-xl font-bold text-green-600">฿{toTHB(result.totalDividends)}</p>
+                        </div>
+                      )}
+                      {enableDividends && !drip && (
+                        <div className="bg-blue-50 rounded-lg p-4">
+                          <p className="text-sm text-muted-foreground">เงินสดปันผล</p>
+                          <p className="text-xl font-bold text-blue-600">฿{toTHB(result.accumulatedCashDividends)}</p>
+                        </div>
+                      )}
                       <div className={`rounded-lg p-4 ${profit >= 0 ? "bg-green-50" : "bg-red-50"}`}>
                         <p className="text-sm text-muted-foreground">กำไร/ขาดทุน</p>
                         <p className={`text-xl font-bold ${profit >= 0 ? "text-green-600" : "text-red-600"}`}>
@@ -495,6 +729,17 @@ export default function App() {
                             dot={false}
                             name="รวมทั้งหมด"
                           />
+                          {enableDividends && !drip && (
+                            <Line
+                              type="monotone"
+                              dataKey="CashDividends"
+                              stroke="#3b82f6"
+                              strokeWidth={2}
+                              strokeDasharray="5 5"
+                              dot={false}
+                              name="เงินสดปันผลสะสม"
+                            />
+                          )}
                           {assets.map((a, idx) => (
                             <Line
                               key={a.id}
@@ -514,16 +759,6 @@ export default function App() {
             )
           })}
         </Tabs>
-
-        {/* Alert Note */}
-        <Alert className="rounded-2xl border-amber-200 bg-amber-50">
-          <AlertTriangle className="h-4 w-4 text-amber-600" />
-          <AlertTitle className="text-amber-800">หมายเหตุสำคัญ</AlertTitle>
-          <AlertDescription className="text-amber-700">
-            ผลลัพธ์นี้เป็นเพียงการจำลองด้วยอัตราผลตอบแทนเฉลี่ยคงที่ ไม่ได้สะท้อนความผันผวนจริงของตลาด ใช้เพื่อการศึกษาเท่านั้น
-            ไม่ควรใช้แทนคำแนะนำด้านการลงทุนจริง
-          </AlertDescription>
-        </Alert>
       </div>
     </div>
   )
